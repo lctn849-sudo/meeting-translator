@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101820">
+  <title>Post Meeting Translator</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101820; --panel:#1b2833; --text:#f5f7fa; --muted:#b7c4cf; --accent:#4da3ff; --green:#27ae60; --red:#d9534f; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom); background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:760px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; gap:14px; padding:18px 0 24px; }
+    h1 { font-size:25px; margin:4px 0 0; }
+    .sub { color:var(--muted); font-size:14px; line-height:1.4; margin:0; }
+    .controls { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    button { border:0; border-radius:14px; padding:16px 12px; font-size:17px; font-weight:700; color:white; background:var(--accent); }
+    button:disabled { opacity:.45; }
+    #start { background:var(--green); }
+    #stop { background:var(--red); }
+    #status { background:var(--panel); padding:12px 14px; border-radius:12px; color:var(--muted); font-size:14px; }
+    #live { background:var(--panel); border-radius:16px; padding:16px; min-height:105px; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+    #partial { color:#d4e2ee; font-size:18px; line-height:1.45; }
+    #translations { display:flex; flex-direction:column; gap:12px; }
+    .translation { background:#203342; border-radius:16px; padding:16px; font-size:25px; line-height:1.35; overflow-wrap:anywhere; }
+    .translation small { display:block; color:#a9bfce; font-size:12px; margin-bottom:7px; }
+    .empty { color:var(--muted); font-size:16px; line-height:1.45; padding:12px 2px; }
+    .bottom { display:flex; gap:10px; }
+    .bottom button { flex:1; background:#344653; font-size:14px; padding:13px 10px; }
+    .notice { color:var(--muted); font-size:12px; line-height:1.45; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Post Meeting Translator</h1>
+  <p class="sub">Ascolta il tedesco e mostra la traduzione scritta in italiano.</p>
+
+  <div class="controls">
+    <button id="start">▶ Avvia ascolto</button>
+    <button id="stop" disabled>■ Ferma</button>
+  </div>
+
+  <div id="status" role="status">Pronto. Premi “Avvia ascolto”.</div>
+
+  <section id="live">
+    <div class="label">Tedesco riconosciuto</div>
+    <div id="partial">Qui appariranno le parole ascoltate…</div>
+  </section>
+
+  <section>
+    <div class="label">Traduzione in italiano</div>
+    <div id="translations"><div class="empty">Le traduzioni compariranno qui, in caratteri grandi.</div></div>
+  </section>
+
+  <div class="bottom">
+    <button id="copy">Copia traduzioni</button>
+    <button id="clear">Cancella tutto</button>
+  </div>
+
+  <p class="notice">
+    Nota: questa è una versione di prova. Il riconoscimento vocale e la traduzione richiedono normalmente Internet e un browser compatibile. Su iPhone, Safari potrebbe non supportare il riconoscimento continuo: in quel caso prova Chrome o un altro browser compatibile, oppure usa l'app Traduci di Apple. Non lasciare questa pagina come unico sistema per informazioni importanti della riunione.
+  </p>
+</main>
+<script>
+(() => {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const startBtn = document.getElementById('start');
+  const stopBtn = document.getElementById('stop');
+  const status = document.getElementById('status');
+  const partial = document.getElementById('partial');
+  const translations = document.getElementById('translations');
+  const clearBtn = document.getElementById('clear');
+  const copyBtn = document.getElementById('copy');
+
+  let recognition = null;
+  let listening = false;
+  let restarting = false;
+  let history = [];
+  let lastTranslated = '';
+  let queue = Promise.resolve();
+
+  function setStatus(message) { status.textContent = message; }
+  function setListening(value) {
+    listening = value;
+    startBtn.disabled = value;
+    stopBtn.disabled = !value;
+  }
+  function addTranslation(original, translated) {
+    const empty = translations.querySelector('.empty');
+    if (empty) empty.remove();
+    const card = document.createElement('article');
+    card.className = 'translation';
+    const source = document.createElement('small');
+    source.textContent = 'DAL TEDESCO';
+    const content = document.createElement('div');
+    content.textContent = translated;
+    card.append(source, content);
+    translations.appendChild(card);
+    history.push({ original, translated });
+    card.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }
+  async function translateText(text) {
+    const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=de&tl=it&dt=t&q=' + encodeURIComponent(text);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Servizio di traduzione non disponibile');
+    const data = await response.json();
+    return (data[0] || []).map(part => part[0] || '').join('').trim();
+  }
+  function enqueueTranslation(text) {
+    const clean = text.trim();
+    if (!clean || clean === lastTranslated) return;
+    lastTranslated = clean;
+    queue = queue.then(async () => {
+      try {
+        setStatus('Traduco…');
+        const translated = await translateText(clean);
+        if (translated) addTranslation(clean, translated);
+        setStatus(listening ? 'Ascolto attivo' : 'Ascolto fermo');
+      } catch (error) {
+        setStatus('Errore di traduzione: controlla la connessione Internet.');
+      }
+    });
+  }
+  function createRecognition() {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'de-DE';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const text = event.results[i][0].transcript.trim();
+        if (event.results[i].isFinal) enqueueTranslation(text);
+        else interim += text + ' ';
+      }
+      partial.textContent = interim || 'In attesa di altre parole…';
+    };
+    recognition.onerror = (event) => {
+      setStatus('Problema microfono/riconoscimento: ' + event.error);
+    };
+    recognition.onend = () => {
+      if (listening && !restarting) {
+        restarting = true;
+        setTimeout(() => {
+          restarting = false;
+          if (listening) {
+            try { recognition.start(); }
+            catch (_) { setStatus('Riconnessione all’ascolto…'); }
+          }
+        }, 500);
+      } else if (!listening) {
+        setStatus('Ascolto fermo');
+      }
+    };
+  }
+
+  startBtn.addEventListener('click', () => {
+    if (!SpeechRecognition) {
+      setStatus('Questo browser non supporta il riconoscimento vocale. Prova un browser compatibile o l’app Traduci di Apple.');
+      return;
+    }
+    if (listening) return;
+    createRecognition();
+    setListening(true);
+    setStatus('Richiesta autorizzazione microfono…');
+    try {
+      recognition.start();
+      setStatus('Ascolto attivo: parla vicino all’iPhone.');
+    } catch (error) {
+      setListening(false);
+      setStatus('Impossibile avviare il microfono. Ricarica la pagina e riprova.');
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    setListening(false);
+    if (recognition) recognition.stop();
+    setStatus('Ascolto fermo');
+  });
+
+  clearBtn.addEventListener('click', () => {
+    history = [];
+    translations.innerHTML = '<div class="empty">Le traduzioni compariranno qui, in caratteri grandi.</div>';
+    partial.textContent = 'Qui appariranno le parole ascoltate…';
+    lastTranslated = '';
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    const text = history.map(item => item.translated).join('\n\n');
+    if (!text) { setStatus('Non ci sono traduzioni da copiare.'); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus('Traduzioni copiate.');
+    } catch (_) {
+      setStatus('Copia non disponibile in questo browser.');
+    }
+  });
+})();
+</script>
+</body>
+</html>
